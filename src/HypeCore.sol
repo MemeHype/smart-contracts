@@ -1,154 +1,110 @@
 //SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.26;
 
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "lib/v2-core/contracts/interfaces/IUniswapV2Factory.sol";
+import "lib/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
+import "lib/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Token} from "./Token.sol";
 
-interface IHTS {
-    function createToken(string memory name, string memory symbol,uint256 initialSupply) external returns (address);
-    function associateToken(address token,address account) external;
-    function transferToken(addreess token, address to, uint256 amount) external'
-}
 
-contract HypeCore is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
-    struct Token {
-        uint256 initialBalance;
-        uint256 balance;
-        uint256 availableTokenBalance;
-        bool isActive;
-        bool isLpCreated;
+
+contract HypeCore {
+    enum TokenState {
+        NOT_CREATED,
+        ICO,
+        TRADING
     }
-    uint constant public DECIMALS = 10 ** 18;
-    uint constant public INITIAL_SUPPLY = (10 ** 9) * DECIMALS;
-    uint256 private constant BASIS_POINTS = 10000;
 
-    uint constant public INITIAL_MINT = MAX_SUPPLY * 20 /100;
-    mapping(address => bool) public tokens;
-    address public treasure;
-    uint256 public initialBalance;
-    uint256 public availableTokenBalance;
-    uint256 public createFee;
-    uint96 public commissionRate;
-    uint96 public finalRate;
 
-    mapping(address => Token) public balances;
+    
+    uint constant public DECIMALS = 10** 18;
+    uint constant public MAX_SUPPLY = (10 ** 9) * DECIMALS;
+    uint constant public INITIAL_MINT = MAX_SUPPLY * 20 / 100;
+    uint constant public k = 46875;
+    uint constant public offset = 18750000000000000000000000000000;
+    uint constant public SCALING_FACTOR = 10 ** 39;
+    uint constant public FUNDING_GOAL = 30 ether;
+    address constant public UNISWAP_V2_FACTORY = "0x5C69bEe701ef814a2B6a3EDD4B1652CB9cc5aA6f";
+    address constant public UNISWAP_V2_ROUTER = "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D";
 
-    address public lpAddress;
-    address public currency;
-    address public admin; address public treasure;
-    uint256 public initialBalance;
-    uint256 public availableTokenBalance;
-    uint256 public createFee;
-    uint96 public commissionRate;
-    uint96 public finalRate;
 
-    mapping(address => Token) public balances;
-
-    address public lpAddress;
-    address public currency;
-    address public admin;
+    mapping(address => TokenState) public tokens;
+    mapping(address => uint) public collateral;//amount of ETH received for a token
+    mapping(address => mapping(address => uint)) public balances; //token balances for ppl who bought tokens, not released yet
 
 
 
-    function createToken(string memory name, string memory symbol) external returns(address ERC20)
+
+function createToken(string memory name, string memory ticker) external returns(address)
     {
-        Token token = new Token(name,ticker,1000000000);
-        address tokenAddress = address(newToken);
-        balances[tokenAddress].balance = initialBalance;
-        balances[tokenAddress].initialBalance = initialBalance;
-        balances[tokenAddress].availableTokenBalance = availableTokenBalance;
-        balances[tokenAddress].isActive = true;
-        ILP(tokenAddress).renounceOwnership();
-        emit Create(tokenAddress, initialBalance, availableTokenBalance);
-        return newToken;
-    }
-    function createTokenWithBuy(
-        string memory name,
-        string memory symbol
-    ) external payable nonReentrant {
-        require(msg.value > 0, "ETH amount must be greater than zero");
+    Token token = new Token (name, ticker, INITIAL_MINT);
+    tokens(address(token)) = TokenState.ICO;
+    return address(token);
 
-        ERC20 newToken = new YourMemeToken(name, symbol, 1000000000);
-        address tokenAddress = address(newToken);
-        balances[tokenAddress].balance = initialBalance;
-        balances[tokenAddress].initialBalance = initialBalance;
-        balances[tokenAddress].availableTokenBalance = availableTokenBalance;
-        balances[tokenAddress].isActive = true;
-        ILP(tokenAddress).renounceOwnership();
-
-        uint256 receivedAmount = (msg.value * 10000) / (10000 + commissionRate);
-
-        uint256 tokenReserveBalance = getReserve(tokenAddress);
-        uint256 stopBalance = (1000000000 ether -
-            balances[tokenAddress].availableTokenBalance);
-
-        uint256 fee = msg.value - receivedAmount;
-        uint256 tokensToReceive = getInputPrice(
-            receivedAmount,
-            balances[tokenAddress].balance,
-            tokenReserveBalance
-        );
-
-        uint256 reserveBalanceAfterTxCompleted = (tokenReserveBalance -
-            tokensToReceive);
-
-        uint256 refund;
-        if (reserveBalanceAfterTxCompleted < stopBalance) {
-            tokensToReceive = tokenReserveBalance - stopBalance;
-            reserveBalanceAfterTxCompleted = stopBalance;
-            receivedAmount = getOutputPrice(
-                tokensToReceive,
-                balances[tokenAddress].balance,
-                tokenReserveBalance
-            );
-            fee = _getPortionOfBid(receivedAmount, commissionRate);
-            require(
-                msg.value >= (fee + receivedAmount),
-                "insufficient payment"
-            );
-            refund = msg.value - (fee + receivedAmount);
-        }
-        balances[tokenAddress].balance += receivedAmount;
-
-        if (reserveBalanceAfterTxCompleted == stopBalance) {
-            balances[tokenAddress].isActive = false;
-        }
-
-        emit CreateWithFirstBuy(
-            tokenAddress,
-            initialBalance,
-            availableTokenBalance,
-            tokensToReceive,
-            receivedAmount,
-            fee,
-            reserveBalanceAfterTxCompleted
-        );
-
-        ERC20(tokenAddress).transfer(msg.sender, tokensToReceive);
-        sendProtocolFeeToTreasure(fee);
-        if (refund > 0) {
-            (bool success, ) = payable(msg.sender).call{value: refund}("");
-            require(success, "refund is failed");
-        }
     }
 
+    function buy(address tokenAddress, uint amount) external payable {
+        require(tokens[tokenAddress] == TokenState.TRADING, "Token doesn't exist or not avl for ICO"]);
+        Token token = Token(tokenAddress);
+        uint availableSupply = MAX_SUPPLy - INITIAL_MINT - token.totalSupply();
+        require(amount  <= availableSupply, "not enough available supply");
+        //calculate amount of eth to buy
+        uint requiredEth =  calculateRequiredEth(tokenAddress, amount);
+        require(msg.value >= requiredEth, "not enough eth");
+        collateral[tokenAddress] += requiredEth;
+        balances[tokenAddress][msg.sender] += amount;
+        token.mint(address(this), amount);
 
-
-
-
-        function buy(address tokenAddress, uint amount) external payable{
-            require(tokens[tokenAddress] ==true, "token does not exist");
-            Token token = Token(tokenAddress);
-            uint availableSupply = MAX_SUPPLY - INITIAL_MINT - token.totalSupply();
-            require(amount <= availableSupply,"not enough available supply");
-            uint requiredEth = calculateRequiredhbar(tokenAddress, amount);
-
-        }
-        function calculateRequiredhbar(address tokenAddress, uint amount) internal returns (uint)
+        if(collateral[tokenAddress] >= FUNDING_GOAL)
         {
+            //create liquidity pool
+            address pool = _createLiquidityPool[tokenAddress];
+            //provide liquidity
+           uint liquidity =  _provideLiquidity (tokenAddress, INITIAL_MINT, collateral[tokenAddress]);
+            //burn lp tokens
+            _burnLpTokens(pool, ilquidity);
+        }
+    }
+    function calculateRequiredEth(address tokenAddress, uint amount) public returns(uint){
+        //amount eth = (b-a) * (f(a) + f(b))/ 2
+        Token token - Token(tokenAddress);
+        uint b =  token.totalSupply() - INITIAL_MINT + amount;
+        uint a= token.totalSupply() - INITIAL_MINT;
+        uint f_a = k * a + offset;
+        uint f_b = k * b + offset;
+        return (b - a) * (f_a + f_b) / 2;
+    }
 
-        }
-        }
+    funtion _createLiquidityPool(address tokenAddress) external returns (address) {
+        Token token = Token(tokenAddress);
+        IUniswapFactory factory = IUniswapV2Factory(UNISWAP_V2_FACTORY);
+        IUniswapFactory router = IUniswapV2Router02(UNISWAP_V2_ROUTER);
+        address pair = factory.createPair(tokenAddress, router.WETH());
+        return pair;
+
+    }
+    function _provideLiquidity(address tokenAddress, uint tokenAmount, uint ethAmount) internal returns (uint)
+    {
+        Token token = Token(tokenAddress);
+        IUniswapFactory router = IUniswapV2Factory(UNISWAP_V2_FACTORY);
+        token.approve(UINSWAP_V2_ROUTER, tokenAmount);
+        (uint amountToken, uint amountETH, uint liquidity) = router.addLiqduitidtyETH{value: ethAmount}(tokenAddress, tokenAmount, tokenAmount,ethAmount, address(this), block.timestamp);
+        return liquidity;
+    } 
+    function _burnLpTokens(address poolAddress, uint amount) internal {
+        IUniswapV2Pair pool = IUniswapV2Pair(pooladdress);
+        pool.transfer(address(0), amount);
+    }
+    function withdraw(address tokenAddress,address to) external {
+        require(tokens[tokenAddress] != TokenState.TRADING, "token doesn't exist or hasn't reached funcing goal");
+        uint balance = balances[tokenAddress][msg.sender];
+        require(balance > 0, "no token to withdraw");
+        balances[tokenAddress][msg.sender] = 0;
+        Token token = Token(tokenAddress);
+        token.transfer(msg.sender);
+    }
+
+} 
